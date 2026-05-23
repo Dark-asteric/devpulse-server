@@ -1,22 +1,26 @@
 import type { NextFunction, Request, Response } from "express";
 import { issueService } from "./issue.service";
-import { pool } from "../../db";
+import { responseUtils } from "../utils/response";
+import { queryUtils } from "../utils/query";
 
 const createIssue = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { title, description, type, status } = req.body;
-        const reporter_id = req.user?.id;
-        // console.log("reporter_id:", reporter_id);
-        const result = await issueService.createIssueIntoDB({ title, description, type, status, reporter_id });
-        res.status(201).json({
-            success: true,
-            message: 'Issue created successfully',
-            data: result.rows[0],
+        const reporter_id = req.user!.id;
+
+        const result = await issueService.createIssueIntoDB({
+            title,
+            description,
+            type,
+            status,
+            reporter_id,
         });
-    } catch (err: any) {
+
+        responseUtils.sendSuccess(res, result.rows[0], 'Issue created successfully.', 201);
+    } catch (err: unknown) {
         next(err);
     }
-}
+};
 
 const getAllIssues = async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -25,171 +29,143 @@ const getAllIssues = async (req: Request, res: Response, next: NextFunction) => 
             type?: string;
             status?: string;
         };
+
         if (sort && !['newest', 'oldest'].includes(sort)) {
-            res.status(400).json({ success: false, message: "sort must be 'newest' or 'oldest'." });
+            responseUtils.sendError(res, "sort must be 'newest' or 'oldest'.", 400);
             return;
         }
         if (type && !['bug', 'feature_request'].includes(type)) {
-            res.status(400).json({ success: false, message: "type must be 'bug' or 'feature_request'." });
+            responseUtils.sendError(res, "type must be 'bug' or 'feature_request'.", 400);
             return;
         }
         if (status && !['open', 'in_progress', 'resolved'].includes(status)) {
-            res.status(400).json({ success: false, message: "status must be 'open', 'in_progress', or 'resolved'." });
+            responseUtils.sendError(res, "status must be 'open', 'in_progress', or 'resolved'.", 400);
             return;
         }
+
         const issues = await issueService.getAllIssuesFromDB({
             ...(sort && { sort }),
             ...(type && { type }),
             ...(status && { status }),
         });
 
-        res.status(200).json({
-            success: true,
-            data: issues,
-        });
+        responseUtils.sendSuccess(res, issues);
     } catch (err: unknown) {
         next(err);
     }
-}
-
-const updateIssueById = async (req: Request, res: Response, next: NextFunction) => {
-    try {
-        const issueId = Number(req.params.id);
-        const { title, description, type , status} = req.body;
-        const requestingUser = req.user!;
-        const issueResult = await pool.query(
-            'SELECT id, title, description, type, status, reporter_id FROM issues WHERE id = $1',
-            [issueId]
-        );
-        const issue = issueResult.rows[0];
-        if (!issue) {
-            res.status(404).json({ success: false, message: 'Issue not found.' });
-            return;
-        }
-        if (requestingUser.role === 'contributor') {
-            if (issue.reporter_id !== requestingUser.id) {
-                res.status(403).json({
-                    success: false,
-                    message: 'You can only edit your own issues.',
-                });
-                return;
-            }
-            if (issue.status !== 'open') {
-                res.status(409).json({
-                    success: false,
-                    message: 'You can only edit issues that are still open.',
-                });
-                return;
-            }
-        }
-        const fields: string[] = [];
-        const values: unknown[] = [];
-        let idx = 1;
-
-        if (title !== undefined) {
-            fields.push(`title = $${idx++}`);
-            values.push(title);
-        }
-        if (description !== undefined) {
-            fields.push(`description = $${idx++}`);
-            values.push(description);
-        }
-        if (type !== undefined) {
-            fields.push(`type = $${idx++}`);
-            values.push(type);
-        }
-        if (status !== undefined) {
-            fields.push(`status = $${idx++}`);
-            values.push(status);
-        }
-
-        if (fields.length === 0) {
-            res.status(400).json({ success: false, message: 'No fields provided to update.' });
-            return;
-        }
-
-        fields.push(`updated_at = NOW()`);
-        values.push(issueId);
-
-        const updateResult = await pool.query(
-            `UPDATE issues
-            SET ${fields.join(', ')}
-            WHERE id = $${idx}
-            RETURNING id, title, description, type, status, reporter_id, created_at, updated_at`,
-            values
-        );
-        res.status(200).json({
-            success: true,
-            message: 'Issue updated successfully',
-            data: updateResult.rows[0],
-        });
-    } catch (err: any) {
-        next(err);
-    }
-}
+};
 
 const getIssueById = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const id = Number(req.params.id);
-        if (isNaN(id)) {
-            res.status(400).json({ success: false, message: 'Issue id must be a number.' });
-            return;
-        }
-        const issue = await issueService.getIssueByIdFromDB({ payload: { id } });
-        // console.log("issue:", issue.rows[0]);
-        if (!issue) {
-            res.status(404).json({ success: false, message: 'Issue not found.' });
-            return;
-        }
-        const reporterResult = await issueService.getRepoterByIdFromDB({ payload: { reporter_id: issue.rows[0].reporter_id } });
 
-        const reporterName = reporterResult.rows[0]?.name || "Unknown";
-        const reporterId = reporterResult.rows[0]?.id || null;
-        const reporterRole = reporterResult.rows[0]?.role || null;
-        const issueWithReporter = {
-            ...issue.rows[0],
-            reporter_id: {
-                reporter_id: reporterId,
-                reporter_name: reporterName,
-                reporter_role: reporterRole,
-            }
+        if (isNaN(id)) {
+            responseUtils.sendError(res, 'Issue id must be a number.', 400);
+            return;
         }
-        // console.log("reporterResult:", reporterResult.rows[0]);
-        res.status(200).json({
-            success: true,
-            data: issueWithReporter,
+
+        // Query 1 — get the issue
+        const issue = await issueService.getIssueByIdFromDB({ payload: { id } });
+
+        if (!issue) {
+            responseUtils.sendError(res, 'Issue not found.', 404);
+            return;
+        }
+
+        const reporter = await issueService.getReporterByIdFromDB({
+            payload: { reporter_id: issue.reporter_id },
         });
+
+        const reporterData = reporter
+            ? { id: reporter.id, name: reporter.name, role: reporter.role }
+            : { id: issue.reporter_id, name: 'Deleted User', role: 'N/A' };
+
+        const { reporter_id, ...issueWithoutReporterId } = issue;
+        void reporter_id;
+
+        responseUtils.sendSuccess(res, { ...issueWithoutReporterId, reporter: reporterData });
     } catch (err: unknown) {
         next(err);
     }
-}
+};
 
+const updateIssueById = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const issueId = Number(req.params.id);
+        const { title, description, type, status } = req.body;
+        const requestingUser = req.user!;
+
+        if (isNaN(issueId)) {
+            responseUtils.sendError(res, 'Issue id must be a number.', 400);
+            return;
+        }
+
+        // Fetch existing issue
+        const issueResult = await queryUtils.runQuery(
+            'SELECT id, title, description, type, status, reporter_id FROM issues WHERE id = $1',
+            [issueId]
+        );
+        const issue = issueResult.rows[0];
+
+        if (!issue) {
+            responseUtils.sendError(res, 'Issue not found.', 404);
+            return;
+        }
+
+        // Permission check for contributors
+        if (requestingUser.role === 'contributor') {
+            if (issue.reporter_id !== requestingUser.id) {
+                responseUtils.sendError(res, 'You can only edit your own issues.', 403);
+                return;
+            }
+            if (issue.status !== 'open') {
+                responseUtils.sendError(res, 'You can only edit issues that are still open.', 409);
+                return;
+            }
+        }
+
+        const result = await issueService.updateIssueInDB({
+            payload: { id: issueId, title, description, type, status },
+        });
+
+        responseUtils.sendSuccess(res, result.rows[0], 'Issue updated successfully.');
+    } catch (err: unknown) {
+        if (err instanceof Error && err.message === 'No fields to update') {
+            responseUtils.sendError(res, 'No fields provided to update.', 400);
+            return;
+        }
+        next(err);
+    }
+};
 
 const deleteIssueById = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const id = Number(req.params.id);
 
-    const id = Number(req.params.id);
-    if (isNaN(id)) {
-        res.status(400).json({ success: false, message: 'Issue id must be a number.' });
-        return;
-    }
-    const issue = await issueService.getIssueByIdFromDB({ payload: { id } });
+        if (isNaN(id)) {
+            responseUtils.sendError(res, 'Issue id must be a number.', 400);
+            return;
+        }
 
-    if (!issue) {
-        res.status(404).json({ success: false, message: 'Issue not found.' });
-        return;
+        const issue = await issueService.getIssueByIdFromDB({ payload: { id } });
+
+        if (!issue) {
+            responseUtils.sendError(res, 'Issue not found.', 404);
+            return;
+        }
+
+        await issueService.deleteIssueByIdFromDB({ payload: { id } });
+
+        responseUtils.sendSuccessMessage(res, 'Issue deleted successfully.');
+    } catch (err: unknown) {
+        next(err);
     }
-    const result = await issueService.deleteIssueByIdFromDB({ payload: { id } });
-    res.status(200).json({
-        success: true,
-        message: 'Issue deleted successfully',
-        data: result.rows[0],
-    });
-}
+};
 
 export const issueController = {
     createIssue,
     getAllIssues,
-    updateIssueById,
     getIssueById,
+    updateIssueById,
     deleteIssueById,
-}
+};

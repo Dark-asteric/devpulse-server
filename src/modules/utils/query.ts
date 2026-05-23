@@ -8,6 +8,10 @@ const runQuery = async <T extends QueryResultRow>(
     return pool.query<T>(sql, params);
 };
 
+const firstRow = <T>(result: { rows: T[] }): T | null => {
+    return result.rows[0] ?? null;
+};
+
 const buildSetClause = (
     fields: Record<string, unknown>,
     startIndex: number = 1
@@ -58,4 +62,5 @@ export const queryUtils = {
     runQuery,
     buildSetClause,
     buildWhereClause,
+    firstRow
 };
