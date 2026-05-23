@@ -42,7 +42,7 @@
 
 ```bash
 git clone https://github.com/Dark-asteric/devpulse-server.git
-cd devpulse
+cd devpulse-server
 ```
 
 ### 2. Install dependencies
@@ -83,7 +83,7 @@ npm start
 ### Base URL
 
 ```
-https://devpulse-api.vercel.app
+https://devpulse-server-sigma.vercel.app/
 ```
 
 ### Authorization Header
